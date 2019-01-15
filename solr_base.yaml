@@ -1,0 +1,437 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: AWS CloudFormation template to create a new EC2 Container Service Cluster
+  for Solr
+Parameters:
+  EcsAmiId:
+    Type: String
+    Description: Custom ami id included fix for volume mount issue- ami-08a4a6ff5e4585cb7
+    Default: ${EcsAmiId}
+  EcsInstanceType:
+    Type: String
+    Description: ECS EC2 instance type
+    Default: ${EcsInstanceType}
+    AllowedValues:
+    - t2.micro
+    - t2.small
+    - t2.medium
+    - t2.large
+    - m4.large
+    - m4.xlarge
+    - m4.2xlarge
+    - m4.4xlarge
+    - m4.10xlarge
+    - c4.large
+    - c4.xlarge
+    - c4.2xlarge
+    - c4.4xlarge
+    - c4.8xlarge
+    - r4.large
+    - r4.xlarge
+    - r4.2xlarge
+    - r4.4xlarge
+    - r4.8xlarge
+    - d2.xlarge
+    - d2.2xlarge
+    - d2.4xlarge
+    - d2.8xlarge
+    ConstraintDescription: must be a valid EC2 instance type.
+  KeyName:
+    Type: String
+    Description: Optional - Name of an existing EC2 KeyPair to enable SSH access to
+      the ECS instances
+    Default: ${KeyName}
+  DockerImage:
+    Type: String
+    Description: Registry and image to use
+    Default: ${DockerImage}
+  EnvironmentVar:
+    Type: String
+    Description: Environment - Staging, Production etc
+    Default: production
+  Zookeepers:
+    Type: String
+    Description: Comma separated string of Zookeeper IPs and ports
+    Default: ${Zookeepers}
+  Jvmmem:
+    Type: String
+    Description: Amount of JVM memory to start Solr with
+    Default: 30g
+  VpcId:
+    Type: String
+    Description: Optional - VPC Id of existing VPC. Default is 172.26.0.0/16
+    Default: ${VpcId}
+    AllowedPattern: "^(?:vpc-[0-9a-f]{8}|)$"
+    ConstraintDescription: VPC Id must begin with 'vpc-'
+  SubnetIds:
+    Type: CommaDelimitedList
+    Description: Optional - Comma separated list of existing VPC Subnet Ids where
+      ECS instances will run, default is eu-west-1a
+    Default: ${SubnetIds}
+  AsgMaxSize:
+    Type: Number
+    Description: Maximum size and initial Desired Capacity of ECS Auto Scaling Group
+    Default: ${AsgMaxSize}
+  AsgMinSize:
+    Type: Number
+    Description: Minimum size of ECS Auto Scaling Group
+    Default: ${AsgMinSize}
+  ECSServiceSize:
+    Type: Number
+    Description: Number of containers to run, should match AsgMaxSize
+    Default: ${ECSServiceSize}
+  Memory:
+    Type: Number
+    Description: Memory for task definition
+    Default: ${Memory}
+  CPUunits:
+    Type: Number
+    Description: CPU for task definition, an instance has 1024 units per vCPU
+    Default: ${CPUunits}
+  DeployMaxPercent:
+    Type: Number
+    Description: Maximum percent for deployments
+    Default: ${DeployMaxPercent}
+  DeployMinPercent:
+    Type: Number
+    Description: Minimum percent to reduce tasks for deployments (85% = min of 7 of 8 for prod, 0% = replace single container for stg)
+    Default: ${DeployMinPercent}
+  LatencyAlertThreshold:
+    Type: Number
+    Description: Latency in seconds over which to generate an alert
+    Default: 0.6
+  IamRoleInstanceProfile:
+    Type: String
+    Description: Name or the Amazon Resource Name (ARN) of the instance profile associated
+      with the IAM role for the instance
+    Default: ${IamRoleInstanceProfile}
+  EcsPort:
+    Type: Number
+    Description: Security Group port to open on ECS instances - defaults
+      to port TCP 8983
+    Default: 8983
+  ElbPort:
+    Type: Number
+    Description: Optional - Security Group port to open on ELB - port 80 will be open
+      by default
+    Default: 80
+  ElbProtocol:
+    Type: String
+    Description: Optional - ELB Protocol - defaults to HTTP
+    Default: HTTP
+  ElbHealthCheckTarget:
+    Type: String
+    Description: Optional - Health Check Target for ELB - defaults to HTTP:80/
+    Default: HTTP:80/
+  SourceCidr:
+    Type: String
+    Description: Optional - CIDR/IP range for EcsPort and ElbPort - defaults to 0.0.0.0/0
+    Default: 0.0.0.0/0
+  CreateElasticLoadBalancer:
+    Type: String
+    Description: 'Optional : When set to true, creates a ELB for ECS Service'
+    Default: 'true'
+Conditions:
+  ExistingVpcResources:
+    Fn::Not:
+    - Fn::Equals:
+      - Ref: VpcId
+      - ''
+  CreateELB:
+    Fn::And:
+    - Fn::Equals:
+      - Ref: CreateElasticLoadBalancer
+      - 'true'
+    - Condition: ExistingVpcResources
+Resources:
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+  ElbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ELB Allowed Ports
+      VpcId:
+        Ref: VpcId
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort:
+          Ref: ElbPort
+        ToPort:
+          Ref: ElbPort
+        CidrIp:
+          Ref: SourceCidr
+  EcsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ECS Allowed Ports
+      VpcId:
+        Ref: VpcId
+      SecurityGroupIngress:
+        Fn::If:
+        - CreateELB
+        - - IpProtocol: tcp
+            FromPort:
+              Ref: EcsPort
+            ToPort:
+              Ref: EcsPort
+            CidrIp:
+              Ref: SourceCidr
+          - IpProtocol: tcp
+            FromPort: '22'
+            ToPort: '22'
+            CidrIp:
+              Ref: SourceCidr
+          - IpProtocol: tcp
+            FromPort: '1'
+            ToPort: '65535'
+            SourceSecurityGroupId:
+              Ref: ElbSecurityGroup
+        - - IpProtocol: tcp
+            FromPort:
+              Ref: EcsPort
+            ToPort:
+              Ref: EcsPort
+            CidrIp:
+              Ref: SourceCidr
+          - IpProtocol: tcp
+            FromPort: '22'
+            ToPort: '22'
+            CidrIp:
+              Ref: SourceCidr
+  EcsElasticLoadBalancer:
+    Condition: CreateELB
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      SecurityGroups:
+      - Ref: ElbSecurityGroup
+      Subnets:
+      - 'subnet-01717376'
+      - 'subnet-e393c9ba'
+      Scheme: internal
+  EcsALBListener:
+    Type : AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+      - Type: forward
+        TargetGroupArn:
+          Ref: EcsALBTargetGroup
+      LoadBalancerArn:
+        Ref: EcsElasticLoadBalancer
+      Port: 80
+      Protocol: HTTP
+    DependsOn:
+    - EcsElasticLoadBalancer
+    - EcsALBTargetGroup
+  EcsALBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 30
+      UnhealthyThresholdCount: 10
+      HealthCheckPath: /solr/#/
+      Name: !Sub ${AWS::StackName}-Img
+      Port:
+        Ref: EcsPort
+      Protocol: HTTP
+      VpcId:
+        Ref: VpcId
+  EcsInstanceLc:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      ImageId:
+        Ref: EcsAmiId
+      InstanceType:
+        Ref: EcsInstanceType
+      AssociatePublicIpAddress: false
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvdf
+          Ebs:
+            VolumeSize: 250
+            VolumeType: gp2
+      IamInstanceProfile:
+        Ref: IamRoleInstanceProfile
+      KeyName:
+        Ref: KeyName
+      SecurityGroups:
+      - Ref: EcsSecurityGroup
+      UserData:
+        'Fn::Base64': !Sub
+          - |
+            #!/bin/bash -xe
+            # format and mount EBS
+            mkfs -t ext4 /dev/xvdf
+            echo "/dev/xvdf       /mnt/solrdata   ext4    defaults,nofail 0       2" >> /etc/fstab
+            mount -a
+            # install AWS SSM agent
+            cd /tmp
+            curl https://amazon-ssm-eu-west-1.s3.amazonaws.com/latest/linux_amd64/amazon-ssm-agent.rpm -o amazon-ssm-agent.rpm
+            yum install -y amazon-ssm-agent.rpm
+            # configure ECS and docker
+            echo ECS_CLUSTER=${ECSCluster} >> /etc/ecs/ecs.config
+            sed -i -e '/OPTIONS/s/\(.*\)"/\1 --log-driver=none"/g' /etc/sysconfig/docker
+            docker ps
+            service docker restart
+            docker start ecs-agent
+          - ECSCluster:
+              Ref: ECSCluster
+    DependsOn: ECSCluster
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      ContainerDefinitions:
+      - Name: solr
+        Cpu:
+          Ref: CPUunits
+        Environment:
+        - Name: 'JVMMEM'
+          Value:
+            Ref: Jvmmem
+        - Name: 'PORT'
+          Value:
+            Ref: EcsPort
+        - Name: 'ZOOKEEPER'
+          Value:
+            Ref: Zookeepers
+        Essential: 'true'
+        Image:
+          Ref: DockerImage
+        Memory:
+          Ref: Memory
+        LogConfiguration:
+          LogDriver: awslogs
+          Options:
+            awslogs-group: 'solrlogs'
+            awslogs-region: 'eu-west-1'
+            awslogs-stream-prefix:
+              Ref: EnvironmentVar
+        MountPoints:
+        - ContainerPath: /opt/solr/server/solr
+          SourceVolume: solrdata
+        - ContainerPath: /opt/solr/import/import
+          SourceVolume: solrimport
+        PortMappings:
+        - ContainerPort:
+            Ref: EcsPort
+          HostPort:
+            Ref: EcsPort
+          Protocol: 'tcp'
+      TaskRoleArn: 'arn:aws:iam::376641251557:role/aws-ecstask-solr-role'
+      Family:
+        Ref: AWS::StackName
+      Volumes:
+      - Host:
+          SourcePath: '/mnt/solrdata/data'
+        Name: 'solrdata'
+      - Host:
+          SourcePath: '/mnt/solrdata/import'
+        Name: 'solrimport'
+    DependsOn: ECSCluster
+  solr:
+    Type: AWS::ECS::Service
+    Properties:
+      Cluster:
+        Ref: ECSCluster
+      DesiredCount:
+        Ref: ECSServiceSize
+      DeploymentConfiguration:
+        MaximumPercent:
+          Ref: DeployMaxPercent
+        MinimumHealthyPercent:
+          Ref: DeployMinPercent
+      LoadBalancers:
+      - ContainerName: solr
+        ContainerPort:
+          Ref: EcsPort
+        TargetGroupArn:
+          Ref: EcsALBTargetGroup
+      Role: ecsServiceRole
+      TaskDefinition:
+        Ref: TaskDefinition
+    DependsOn:
+    - ECSCluster
+    - TaskDefinition
+    - EcsInstanceAsg
+    - EcsALBTargetGroup
+    - EcsALBListener
+    - EcsElasticLoadBalancer
+  EcsInstanceAsg:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+        Ref: SubnetIds
+      LaunchConfigurationName:
+        Ref: EcsInstanceLc
+      MinSize:
+        Ref: AsgMinSize
+      MaxSize:
+        Ref: AsgMaxSize
+      DesiredCapacity:
+        Ref: AsgMaxSize
+      Tags:
+        - Key: Name
+          Value:
+            Ref: AWS::StackName
+          PropagateAtLaunch: 'true'
+  HostsAlarm:
+    Type: "AWS::CloudWatch::Alarm"
+    Properties:
+      ActionsEnabled: true
+      AlarmName: !Sub ${AWS::StackName}-HealthyHosts
+      AlarmDescription: 'Email if number of Solr hosts drops below max'
+      Dimensions:
+        - Name: 'TargetGroup'
+          Value: !GetAtt EcsALBTargetGroup.TargetGroupFullName
+        - Name: 'LoadBalancer'
+          Value: !GetAtt EcsElasticLoadBalancer.LoadBalancerFullName
+      MetricName: 'HealthyHostCount'
+      Namespace: 'AWS/ApplicationELB'
+      ComparisonOperator: LessThanThreshold
+      Period: 60
+      EvaluationPeriods: 1
+      Statistic: 'Average'
+      Threshold:
+        Ref: ECSServiceSize
+      AlarmActions:
+        - 'arn:aws:sns:eu-west-1:376641251557:AlamyProd-ALARM'
+      OKActions:
+        - 'arn:aws:sns:eu-west-1:376641251557:AlamyProd-OK'
+      TreatMissingData: 'ignore'
+  LatencyAlarm:
+    Type: "AWS::CloudWatch::Alarm"
+    Properties:
+      ActionsEnabled: true
+      AlarmName: !Sub ${AWS::StackName}-Latency
+      AlarmDescription: 'Email if number of Solr performance is affected'
+      Dimensions:
+        - Name: 'TargetGroup'
+          Value: !GetAtt EcsALBTargetGroup.TargetGroupFullName
+        - Name: 'LoadBalancer'
+          Value: !GetAtt EcsElasticLoadBalancer.LoadBalancerFullName
+      MetricName: 'TargetResponseTime'
+      Namespace: 'AWS/ApplicationELB'
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Period: 60
+      EvaluationPeriods: 2
+      Statistic: 'Average'
+      Threshold: 
+        Ref: LatencyAlertThreshold
+      AlarmActions:
+        - 'arn:aws:sns:eu-west-1:376641251557:AlamyProd-ALARM'
+      OKActions:
+        - 'arn:aws:sns:eu-west-1:376641251557:AlamyProd-OK'
+      TreatMissingData: 'missing'
+Outputs:
+  EcsInstanceAsgName:
+    Description: Auto Scaling Group Name for ECS Instances
+    Value:
+      Ref: EcsInstanceAsg
+  EcsElbName:
+    Description: Load Balancer URL for ECS Service
+    Value:
+      Fn::If:
+        - CreateELB
+        - Fn::Join:
+          - ''
+          - - http://
+            - !GetAtt EcsElasticLoadBalancer.DNSName
+            - "/solr/"
+        - ''
