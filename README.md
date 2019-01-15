@@ -1,2 +1,3 @@
-# changeset
-Solr CF ChangeSet
+# Solr Change-Set
+Solr CloudFormation - ChangeSet
+baseFile
